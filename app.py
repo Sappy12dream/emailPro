@@ -4,19 +4,24 @@ import email
 from email.header import decode_header
 from datetime import date
 from bs4 import BeautifulSoup
+from openai import OpenAI
+from dotenv import load_dotenv
+import os
 
-st.set_page_config(page_title="📧 Email Assistant — MVP")
+# --- Load environment variables ---
+load_dotenv()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("📧 Email Assistant — MVP")
-st.write("Connect your Gmail account to start fetching emails.")
+st.set_page_config(page_title="📧 Email Assistant — LLM Enhanced")
+
+st.title("📧 Email Assistant — Smart Summaries")
+st.write("Now powered by LLM insights! Connect Gmail and get summaries + action items.")
 
 # --- Gmail Credentials Form ---
 with st.form("gmail_form"):
     st.subheader("🔐 Gmail IMAP Credentials")
-    
     email_user = st.text_input("Gmail Address", placeholder="you@gmail.com")
     app_password = st.text_input("App Password", type="password", placeholder="16-character app password")
-    
     submitted = st.form_submit_button("Connect")
 
 # --- Validate IMAP Connection ---
@@ -31,11 +36,11 @@ def validate_gmail_connection(email_user, app_password):
     except Exception as e:
         return False, f"⚠️ Error: {str(e)}"
 
-# --- State variables ---
+# --- Session state ---
 if "connected" not in st.session_state:
     st.session_state.connected = False
 
-# --- Handle Submission ---
+# --- Handle connection ---
 if submitted:
     if not email_user or not app_password:
         st.error("Please enter both email and app password.")
@@ -49,27 +54,55 @@ if submitted:
             st.session_state.connected = False
             st.error(message)
 
-# --- Step 2: Show NEXT button if connected ---
+# --- Next step ---
 if st.session_state.connected:
     st.markdown("---")
-    st.info("Connection verified! You can now fetch emails.")
+    st.info("Connection verified! Choose your fetch settings.")
     next_clicked = st.button("➡️ Next: Choose Fetch Settings")
 
     if next_clicked:
         st.session_state.show_fetch_options = True
+def extract_email_content(msg):
+    """Extracts clean text content from both plain and HTML email parts."""
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            content_disposition = str(part.get("Content-Disposition"))
+            if "attachment" in content_disposition:
+                continue  # Skip attachments
 
-# --- Step 3: Fetch Options ---
+            # Prefer plain text, fallback to HTML
+            if content_type == "text/plain":
+                body += part.get_payload(decode=True).decode(errors="ignore")
+            elif content_type == "text/html" and not body:
+                html = part.get_payload(decode=True).decode(errors="ignore")
+                soup = BeautifulSoup(html, "html.parser")
+                body = soup.get_text()
+    else:
+        content_type = msg.get_content_type()
+        if content_type == "text/plain":
+            body = msg.get_payload(decode=True).decode(errors="ignore")
+        elif content_type == "text/html":
+            html = msg.get_payload(decode=True).decode(errors="ignore")
+            soup = BeautifulSoup(html, "html.parser")
+            body = soup.get_text()
+
+    body = " ".join(body.split())  # Clean whitespace
+    return body.strip()
+
+# --- Fetch Settings ---
 if st.session_state.get("show_fetch_options", False):
     st.markdown("### 📅 Fetch Email Settings")
     start_date = st.date_input("Start Date", value=date.today())
     end_date = st.date_input("End Date", value=date.today())
-    email_limit = st.number_input("Number of emails to fetch", min_value=1, max_value=50, value=5)
+    email_limit = st.number_input("Number of emails to fetch", min_value=1, max_value=10, value=3)
     unread_only = st.checkbox("Fetch unread emails only", value=True)
 
-    fetch_clicked = st.button("📥 Fetch & Summarize Emails")
+    fetch_clicked = st.button("📥 Fetch & Summarize with AI")
 
     if fetch_clicked:
-        with st.spinner("Fetching emails..."):
+        with st.spinner("Fetching and summarizing emails..."):
             try:
                 mail = imaplib.IMAP4_SSL("imap.gmail.com")
                 mail.login(email_user, app_password)
@@ -78,7 +111,7 @@ if st.session_state.get("show_fetch_options", False):
                 criteria = '(UNSEEN)' if unread_only else 'ALL'
                 status, messages = mail.search(None, criteria)
                 mail_ids = messages[0].split()
-                mail_ids = mail_ids[-email_limit:]  # latest N emails
+                mail_ids = mail_ids[-email_limit:]  # latest emails
 
                 emails_data = []
 
@@ -93,34 +126,44 @@ if st.session_state.get("show_fetch_options", False):
                             from_ = msg.get("From")
                             # Extract body
                             body = ""
-                            if msg.is_multipart():
-                                for part in msg.walk():
-                                    ctype = part.get_content_type()
-                                    cdisp = str(part.get("Content-Disposition"))
-                                    if ctype == "text/plain" and "attachment" not in cdisp:
-                                        body = part.get_payload(decode=True).decode(errors="ignore")
-                                        break
-                            else:
-                                body = msg.get_payload(decode=True).decode(errors="ignore")
+                            clean_text = extract_email_content(msg)
 
-                            soup = BeautifulSoup(body, "html.parser")
-                            clean_text = soup.get_text().strip().replace("\n", " ")[:200]
 
-                            # Mock summary (LLM will come later)
-                            summary = f"Summary: This email from {from_} is about '{subject[:50]}'."
+                            # --- AI Summarization ---
+                            prompt = f"""
+                            You are an AI email assistant.
+                            Analyze the following email content and provide:
+                            - A short summary (2 sentences)
+                            - Any action items (if mentioned)
+                            - The tone (formal/informal/urgent/neutral)
+                            - Priority: 🔴 Critical / 🟠 Important / 🟢 Normal
+                            Email content:
+                            {clean_text}
+                            """
+
+                            try:
+                                response = client.responses.create(
+                                    model="gpt-4.1-mini",
+                                    input=prompt,
+                                    temperature=0.4,
+                                )
+                                summary_text = response.output_text.strip()
+                            except Exception as e:
+                                summary_text = f"(AI summarization failed: {e})"
+
                             emails_data.append({
                                 "from": from_,
                                 "subject": subject,
-                                "snippet": clean_text,
-                                "summary": summary
+                                "summary": summary_text[:1500]
                             })
+
                 mail.logout()
-                st.success(f"✅ Fetched {len(emails_data)} emails.")
-                
+                st.success(f"✅ Fetched and summarized {len(emails_data)} emails.")
+
                 for e in emails_data:
                     with st.expander(f"📨 {e['subject']}"):
                         st.write(f"**From:** {e['from']}")
-                        st.write(f"**Summary:** {e['summary']}")
-                        st.caption(e['snippet'])
+                        st.markdown(e["summary"])
+
             except Exception as e:
                 st.error(f"⚠️ Error fetching emails: {str(e)}")
