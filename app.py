@@ -1,160 +1,109 @@
 import streamlit as st
 import imaplib
 import email
+import logging
 from email.header import decode_header
-from datetime import date
-from bs4 import BeautifulSoup
-from openai import OpenAI
-from dotenv import load_dotenv
-import os
+from summarizer import summarize_email
+from utils import extract_email_content
+from gmail_connect_ui import gmail_connect_ui
+from fetch_settings_ui import fetch_settings_ui
+from display_emails_ui import display_emails_ui
 
-# --- CONFIG ---
+# --- LOGGING CONFIG ---
+logging.basicConfig(
+    filename="email_app.log",
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(funcName)s | %(message)s"
+)
+# Stream to console too
+logging.getLogger().addHandler(logging.StreamHandler())
+
+# --- PAGE CONFIG ---
 st.set_page_config(page_title="📧 Email Assistant", layout="wide")
 st.title("📧 Email Assistant — Smart Summaries")
-st.caption("✨ AI-powered daily email insights and summaries.")
+st.caption("✨ Modular AI-powered Gmail summarizer with LLM insights.")
 
-# --- ENV SETUP ---
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# --- STATE INIT ---
+st.session_state.setdefault("connected", False)
+st.session_state.setdefault("fetch_ready", False)
+st.session_state.setdefault("emails_data", None)
 
-# --- HELPERS ---
+# --- STEP 1: GMAIL LOGIN ---
+logging.info("Starting Gmail login UI...")
+connected, email_user, app_password = gmail_connect_ui()
 
-def validate_gmail_connection(email_user, app_password):
-    """Validate IMAP login credentials."""
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(email_user, app_password)
-        mail.logout()
-        return True, "✅ Connection successful!"
-    except imaplib.IMAP4.error as e:
-        return False, f"❌ Login failed: {str(e)}"
-    except Exception as e:
-        return False, f"⚠️ Error: {str(e)}"
+if connected:
+    logging.info(f"✅ Gmail connection established for user: {email_user}")
+    st.session_state.connected = True
+else:
+    logging.info("User not connected yet or login failed.")
 
-def extract_email_content(msg):
-    """Extracts clean text from both plain and HTML email parts."""
-    body = ""
-    if msg.is_multipart():
-        for part in msg.walk():
-            ctype = part.get_content_type()
-            cdisp = str(part.get("Content-Disposition"))
-            if "attachment" in cdisp:
-                continue
-            if ctype == "text/plain":
-                body += part.get_payload(decode=True).decode(errors="ignore")
-            elif ctype == "text/html" and not body:
-                html = part.get_payload(decode=True).decode(errors="ignore")
-                soup = BeautifulSoup(html, "html.parser")
-                body = soup.get_text()
-    else:
-        ctype = msg.get_content_type()
-        if ctype == "text/plain":
-            body = msg.get_payload(decode=True).decode(errors="ignore")
-        elif ctype == "text/html":
-            html = msg.get_payload(decode=True).decode(errors="ignore")
-            soup = BeautifulSoup(html, "html.parser")
-            body = soup.get_text()
-    return " ".join(body.split()).strip()
-
-def summarize_email(content):
-    """Use LLM to summarize and extract insights."""
-    prompt = f"""
-    You are an AI email assistant.
-    Analyze the following email and provide:
-    - 1–2 sentence summary
-    - Key action items (if any)
-    - Tone (formal/informal/urgent/neutral)
-    - Priority: 🔴 Critical / 🟠 Important / 🟢 Normal
-    Email content:
-    {content}
-    """
-    try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-            temperature=0.4,
-        )
-        return response.output_text.strip()
-    except Exception as e:
-        return f"(AI summarization failed: {e})"
-
-# --- SESSION ---
-if "connected" not in st.session_state:
-    st.session_state.connected = False
-if "fetch_ready" not in st.session_state:
-    st.session_state.fetch_ready = False
-
-# --- UI: Gmail Connection ---
-st.markdown("### 🔐 Connect Gmail")
-with st.form("gmail_form"):
-    email_user = st.text_input("Gmail Address", placeholder="you@gmail.com")
-    app_password = st.text_input("App Password", type="password", placeholder="16-character app password")
-    connect = st.form_submit_button("🔗 Connect")
-
-if connect:
-    if not email_user or not app_password:
-        st.error("Please enter both email and app password.")
-    else:
-        with st.spinner("Connecting to Gmail..."):
-            ok, msg = validate_gmail_connection(email_user, app_password)
-        if ok:
-            st.session_state.connected = True
-            st.success(msg)
-        else:
-            st.session_state.connected = False
-            st.error(msg)
-
-# --- UI: Fetch Settings ---
+# --- STEP 2: FETCH SETTINGS ---
 if st.session_state.connected:
-    st.markdown("### ⚙️ Fetch Settings")
-    with st.expander("Set Filters"):
-        start_date = st.date_input("Start Date", value=date.today())
-        end_date = st.date_input("End Date", value=date.today())
-        email_limit = st.slider("Number of emails", 1, 10, 3)
-        unread_only = st.checkbox("Unread only", value=True)
-    if st.button("📥 Fetch & Summarize Emails"):
+    logging.info("Rendering fetch settings UI...")
+    fetch, start_date, end_date, email_limit, unread_only = fetch_settings_ui()
+    if fetch:
+        logging.info(
+            f"Fetch triggered: unread_only={unread_only}, limit={email_limit}, "
+            f"start_date={start_date}, end_date={end_date}"
+        )
         st.session_state.fetch_ready = True
 
-# --- FETCH & SUMMARIZE ---
-if st.session_state.fetch_ready:
-    with st.spinner("Fetching and summarizing emails..."):
+# --- STEP 3: FETCH & SUMMARIZE ---
+if st.session_state.fetch_ready and not st.session_state.get("emails_data"):
+    with st.spinner("📬 Fetching and summarizing emails..."):
         try:
+            logging.info("Connecting to Gmail IMAP...")
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(email_user, app_password)
             mail.select("inbox")
+            logging.info("IMAP connection successful. Fetching emails...")
 
             criteria = '(UNSEEN)' if unread_only else 'ALL'
             _, msgs = mail.search(None, criteria)
             mail_ids = msgs[0].split()[-email_limit:]
+            logging.info(f"Found {len(mail_ids)} emails to process.")
 
             emails_data = []
-            for num in reversed(mail_ids):
+            for i, num in enumerate(reversed(mail_ids), 1):
+                logging.info(f"Fetching email {i}/{len(mail_ids)} (ID: {num.decode()})")
                 _, data = mail.fetch(num, "(RFC822)")
                 for response_part in data:
                     if isinstance(response_part, tuple):
                         msg = email.message_from_bytes(response_part[1])
-                        subject, enc = decode_header(msg["Subject"])[0]
-                        if isinstance(subject, bytes):
-                            subject = subject.decode(enc or "utf-8", errors="ignore")
-                        from_ = msg.get("From")
+                        subject_header = msg.get("Subject")
+                        try:
+                            subject, enc = decode_header(subject_header or "")[0]
+                            if isinstance(subject, bytes):
+                                subject = subject.decode(enc or "utf-8", errors="ignore")
+                        except Exception as e:
+                            logging.warning(f"Subject decode error: {e}")
+                            subject = "(Decode Error)"
+                        from_ = msg.get("From") or "(Unknown Sender)"
+                        logging.info(f"📨 From: {from_} | Subject: {subject}")
+
                         clean_text = extract_email_content(msg)
+                        logging.info(f"Extracted content length: {len(clean_text)}")
+
                         summary = summarize_email(clean_text)
+                        logging.info(f"Summary generated (length {len(summary)} chars).")
+
                         emails_data.append({
                             "from": from_,
-                            "subject": subject,
+                            "subject": subject or "(No Subject)",
                             "summary": summary,
                         })
 
             mail.logout()
+            st.session_state.emails_data = emails_data
+            logging.info(f"✅ Successfully summarized {len(emails_data)} emails.")
             st.success(f"✅ Summarized {len(emails_data)} emails")
 
-            # Display nicely
-            for e in emails_data:
-                with st.container():
-                    st.markdown(f"### 📬 {e['subject']}")
-                    st.caption(f"**From:** {e['from']}")
-                    st.write(e["summary"])
-                    st.divider()
-
         except Exception as e:
-            st.error(f"⚠️ Error fetching emails: {str(e)}")
+            logging.exception("❌ Error during email fetch/summarization.")
+            st.error(f"⚠️ Error fetching emails: {e}")
+
+# --- STEP 4: DISPLAY RESULTS ---
+if st.session_state.get("emails_data"):
+    logging.info("Displaying summarized emails in UI.")
+    display_emails_ui(st.session_state.emails_data)
