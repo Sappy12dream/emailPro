@@ -42,15 +42,29 @@ else:
 if st.session_state.connected:
     logging.info("Rendering fetch settings UI...")
     fetch, start_date, end_date, email_limit, unread_only = fetch_settings_ui()
+
+    # Use persistent flag to trigger fetching
     if fetch:
         logging.info(
-            f"Fetch triggered: unread_only={unread_only}, limit={email_limit}, "
+            f"Fetch triggered manually: unread_only={unread_only}, limit={email_limit}, "
             f"start_date={start_date}, end_date={end_date}"
         )
-        st.session_state.fetch_ready = True
+        st.session_state.fetch_triggered = True
+        st.session_state.fetch_params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "email_limit": email_limit,
+            "unread_only": unread_only,
+        }
 
 # --- STEP 3: FETCH & SUMMARIZE ---
-if st.session_state.fetch_ready and not st.session_state.get("emails_data"):
+if st.session_state.get("fetch_triggered", False):
+    params = st.session_state.get("fetch_params", {})
+    start_date = params.get("start_date")
+    end_date = params.get("end_date")
+    email_limit = params.get("email_limit", 3)
+    unread_only = params.get("unread_only", True)
+
     with st.spinner("📬 Fetching and summarizing emails..."):
         try:
             logging.info("Connecting to Gmail IMAP...")
@@ -68,6 +82,7 @@ if st.session_state.fetch_ready and not st.session_state.get("emails_data"):
             for i, num in enumerate(reversed(mail_ids), 1):
                 logging.info(f"Fetching email {i}/{len(mail_ids)} (ID: {num.decode()})")
                 _, data = mail.fetch(num, "(RFC822)")
+
                 for response_part in data:
                     if isinstance(response_part, tuple):
                         msg = email.message_from_bytes(response_part[1])
@@ -80,6 +95,7 @@ if st.session_state.fetch_ready and not st.session_state.get("emails_data"):
                             logging.warning(f"Subject decode error: {e}")
                             subject = "(Decode Error)"
                         from_ = msg.get("From") or "(Unknown Sender)"
+                        date_ = msg.get("Date") or "(Unknown Date)"
                         logging.info(f"📨 From: {from_} | Subject: {subject}")
 
                         clean_text = extract_email_content(msg)
@@ -87,28 +103,31 @@ if st.session_state.fetch_ready and not st.session_state.get("emails_data"):
 
                         analysis = summarize_email(clean_text)
 
-                        logging.info(f"Summary generated (length {len(analysis)} chars).")
-
                         emails_data.append({
-                                "from": from_,
-                                "subject": subject or "(No Subject)",
-                                "date": msg.get("date") or "(Unknown Date)",
-                                "body": clean_text or "(No content)",
-                                "summary": analysis.get("summary"),
-                                "actions": analysis.get("actions", []),
-                                "tone": analysis.get("tone", "neutral"),
-                                "priority": analysis.get("priority", "🟢 Normal"),
-                                "category": analysis.get("category", "info"),
-                            })
+                            "from": from_,
+                            "subject": subject or "(No Subject)",
+                            "date": date_,
+                            "body": clean_text or "(No content)",
+                            "summary": analysis.get("summary"),
+                            "actions": analysis.get("actions", []),
+                            "tone": analysis.get("tone", "neutral"),
+                            "priority": analysis.get("priority", "🟢 Normal"),
+                            "category": analysis.get("category", "info"),
+                        })
 
             mail.logout()
             st.session_state.emails_data = emails_data
             logging.info(f"✅ Successfully summarized {len(emails_data)} emails.")
-            st.success(f"✅ Summarized {len(emails_data)} emails")
+            # st.success(f"✅ Summarized {len(emails_data)} emails")
 
         except Exception as e:
             logging.exception("❌ Error during email fetch/summarization.")
             st.error(f"⚠️ Error fetching emails: {e}")
+
+        finally:
+            # Reset fetch trigger after processing
+            st.session_state.fetch_triggered = False
+
 
 # --- STEP 4: DISPLAY RESULTS ---
 if st.session_state.get("emails_data"):
