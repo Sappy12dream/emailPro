@@ -4,6 +4,7 @@ A Streamlit-based intelligent email assistant that connects to your Gmail inbox,
 
 ✨ **Built for productivity. Read less, act faster.**
 
+🔗 **[Live Demo](https://email-pro.streamlit.app/)** | 📖 [Documentation](#) | 🐛 [Report Bug](https://github.com/yourusername/email-assistant/issues)
 ---
 
 ## 🚀 Features
@@ -30,6 +31,14 @@ A Streamlit-based intelligent email assistant that connects to your Gmail inbox,
   3. Fetch & summarize
   4. View insights instantly
 - Intuitive design with responsive layout
+
+---
+
+## 🌐 Try It Now!
+
+**🎯 Live Application:** [https://email-pro.streamlit.app/](https://email-pro.streamlit.app/)
+
+No installation required - just visit the link and start using the app!
 
 ---
 
