@@ -85,14 +85,21 @@ if st.session_state.fetch_ready and not st.session_state.get("emails_data"):
                         clean_text = extract_email_content(msg)
                         logging.info(f"Extracted content length: {len(clean_text)}")
 
-                        summary = summarize_email(clean_text)
-                        logging.info(f"Summary generated (length {len(summary)} chars).")
+                        analysis = summarize_email(clean_text)
+
+                        logging.info(f"Summary generated (length {len(analysis)} chars).")
 
                         emails_data.append({
-                            "from": from_,
-                            "subject": subject or "(No Subject)",
-                            "summary": summary,
-                        })
+                                "from": from_,
+                                "subject": subject or "(No Subject)",
+                                "date": msg.get("date") or "(Unknown Date)",
+                                "body": clean_text or "(No content)",
+                                "summary": analysis.get("summary"),
+                                "actions": analysis.get("actions", []),
+                                "tone": analysis.get("tone", "neutral"),
+                                "priority": analysis.get("priority", "🟢 Normal"),
+                                "category": analysis.get("category", "info"),
+                            })
 
             mail.logout()
             st.session_state.emails_data = emails_data
